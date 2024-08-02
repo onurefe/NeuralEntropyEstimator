@@ -6,7 +6,7 @@ import scipy.stats as stats
 from neural_entropy_estimator import NeuralEntropyEstimator
 
 # Generate synthetic dataset with hidden linear dependencies
-def generate_synthetic_data(num_samples, input_dim, latent_dim=10):
+def generate_synthetic_data(num_samples, input_dim, latent_dim=15):
     # Step 1: Generate latent variables
     latent_data = np.random.normal(size=(num_samples, latent_dim))
     
@@ -21,24 +21,24 @@ def generate_synthetic_data(num_samples, input_dim, latent_dim=10):
     data = np.dot(latent_data, transformation_matrix.T)
     
     # Step 4: Add independent noise to ensure full rank covariance
-    noise = np.random.normal(scale=0.025, size=(num_samples, input_dim))
+    noise = np.random.normal(scale=0.05, size=(num_samples, input_dim))
     data += noise
     
     # Add channels.
-    data = np.expand_dims(data, axis=-1)
+    data = np.expand_dims(data, axis=-2)
     return data
 
 def build_model(batch_size, dim):
-    init_tensor = np.random.normal(size=(batch_size, dim, 1))
+    init_tensor = np.random.normal(size=(batch_size, 1, dim))
     model = NeuralEntropyEstimator()
     model(init_tensor)
     return model
 
 @tf.function
-def train_step(model, optimizer, X_batch, rank):
+def train_step(model, optimizer, X_batch):
     with tf.GradientTape() as tape:
-        model(X_batch, rank, training=True)
-        loss = tf.reduce_sum(tf.convert_to_tensor(model.losses))
+        model(X_batch, training=True)
+        loss = tf.reduce_sum(tf.convert_to_tensor(model.layer_losses))
                 
         gradients = tape.gradient(loss, model.trainable_variables)
         optimizer.apply_gradients(zip(gradients, model.trainable_variables))
@@ -46,7 +46,7 @@ def train_step(model, optimizer, X_batch, rank):
     return loss
 
 # Train the model
-def train_model(model, data, full_rank_epochs = 150, epochs=50, batch_size=32):
+def train_model(model, data, epochs=50, batch_size=32):
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath='trained_models/epoch_{epoch:02d}.h5',  # Save weights with epoch number in filename
@@ -54,20 +54,13 @@ def train_model(model, data, full_rank_epochs = 150, epochs=50, batch_size=32):
         save_freq='epoch'
     )
     
-    old_rank = 0
     for epoch in range(epochs):
-        rank = 1 + np.round(33.0 * epoch / (epochs - full_rank_epochs))
-        rank = rank.astype(np.int32)
-        
         for batch in range(0, len(data), batch_size):
             X_batch = data[batch:batch + batch_size]
             
-            loss = train_step(model, optimizer, X_batch, rank)
+            loss = train_step(model, optimizer, X_batch)
             
-        if rank != old_rank:
-            print(model(X_batch, rank)) 
-            old_rank = rank
-            
+        print(model(X_batch)) 
         print(f"Epoch {epoch + 1}, Loss: {loss}")
         # Save weights at the end of the epoch
         checkpoint_callback.model = model
@@ -113,9 +106,9 @@ if __name__ == "__main__":
 
     h_estimation = predicted_entropy
     # Calculate true Gaussian entropy for the synthetic data
-    cov_matrix = np.cov(data[..., 0], rowvar=False)
+    cov_matrix = np.cov(data[:, 0, :], rowvar=False)
     true_entropy = gaussian_entropy(cov_matrix)
     
     # Evaluate the model
     print(f"True Gaussian Entropy: {true_entropy}")
-    print(f"Estimated Entropy: {h_estimation}")
+    print(f"Estimated Entropy: {np.sum(h_estimation)}")
