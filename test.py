@@ -6,30 +6,27 @@ import scipy.stats as stats
 from neural_entropy_estimator import NeuralEntropyEstimator
 
 # Generate synthetic dataset with hidden linear dependencies
-def generate_synthetic_data(num_samples, input_dim, latent_dim=15):
+def generate_synthetic_data(num_samples, estimators, dims, latent_dim=10):
+    if latent_dim > dims:
+        latent_dim = dims
+        
     # Step 1: Generate latent variables
     latent_data = np.random.normal(size=(num_samples, latent_dim))
     
     # Step 2: Create a random linear transformation matrix with full rank
-    while True:
-        np.random.seed(0)
-        transformation_matrix = np.random.randn(input_dim, latent_dim)
-        if np.linalg.matrix_rank(transformation_matrix) == latent_dim:
-            break
+    np.random.seed(0)
+    transformation_matrix = np.random.randn(estimators, latent_dim, dims)
     
-    # Step 3: Apply the linear transformation to map latent variables to higher dimensions
-    data = np.dot(latent_data, transformation_matrix.T)
-    
+    data = np.einsum("bc, ecd->bed", latent_data, transformation_matrix)
+
     # Step 4: Add independent noise to ensure full rank covariance
-    noise = np.random.normal(scale=0.05, size=(num_samples, input_dim))
+    noise = np.random.normal(scale=0.05, size=(num_samples, estimators, dims))
     data += noise
     
-    # Add channels.
-    data = np.expand_dims(data, axis=-2)
     return data
 
-def build_model(batch_size, dim):
-    init_tensor = np.random.normal(size=(batch_size, 1, dim))
+def build_model(batch_size, estimators, dims):
+    init_tensor = np.random.normal(size=(batch_size, estimators, dims))
     model = NeuralEntropyEstimator()
     model(init_tensor)
     return model
@@ -47,7 +44,7 @@ def train_step(model, optimizer, X_batch):
 
 # Train the model
 def train_model(model, data, epochs=50, batch_size=32):
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=2.5e-4)
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath='trained_models/epoch_{epoch:02d}.h5',  # Save weights with epoch number in filename
         save_weights_only=True,
@@ -67,9 +64,9 @@ def train_model(model, data, epochs=50, batch_size=32):
         checkpoint_callback.on_epoch_end(epoch, logs={'loss': loss})
 
 # Load weights and test the model
-def load_and_test_model(weights_filepath, batch_size, input_dim, test_data):
+def load_and_test_model(weights_filepath, batch_size, estimators, dims, test_data):
     # Initialize model
-    model = build_model(batch_size, input_dim)
+    model = build_model(batch_size, estimators, dims)
     
     # Load weights
     model.load_weights(weights_filepath)
@@ -88,26 +85,31 @@ def gaussian_entropy(cov_matrix):
 if __name__ == "__main__":
     # Parameters
     num_samples = 100000
-    input_dim = 33
+    num_estimators = 2
+    num_dims = 16
+    
     epochs = 2000
     batch_size = 10000
 
     # Generate synthetic dataset
-    data = generate_synthetic_data(num_samples, input_dim)
+    data = generate_synthetic_data(num_samples, num_estimators, num_dims)
 
     # Build and train the model
-    model = build_model(batch_size, input_dim)
+    model = build_model(batch_size, num_estimators, num_dims)
     train_model(model, data, epochs=epochs, batch_size=batch_size)
     
     model, predicted_entropy = load_and_test_model("trained_models/epoch_{epoch:02d}.h5".format(epoch=epochs), 
                                                    batch_size=batch_size,
-                                                   input_dim=input_dim,
+                                                   estimators=num_estimators,
+                                                   dims=num_dims,
                                                    test_data=data[0:batch_size, :, :])    
 
     h_estimation = predicted_entropy
+    
     # Calculate true Gaussian entropy for the synthetic data
-    cov_matrix = np.cov(data[:, 0, :], rowvar=False)
-    true_entropy = gaussian_entropy(cov_matrix)
+    cov_matrix1 = np.cov(data[:, 0, :], rowvar=False)
+    cov_matrix2 = np.cov(data[:, 1, :], rowvar=False)
+    true_entropy = gaussian_entropy(cov_matrix1) + gaussian_entropy(cov_matrix2)
     
     # Evaluate the model
     print(f"True Gaussian Entropy: {true_entropy}")

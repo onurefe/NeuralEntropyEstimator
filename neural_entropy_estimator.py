@@ -34,9 +34,9 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
         self._input_shape = input_shape
 
         if self._hidden_layer_size is None:
-            self._hidden_layer_size = 2 * self._n_dims * self._num_kernels
+            self._hidden_layer_size = 2 * self._n_estimators * self._n_dims * self._num_kernels
         else: 
-            if self._hidden_layer_size % (self._n_dims * self._num_kernels) != 0:
+            if self._hidden_layer_size % (self._n_estimators * self._n_dims * self._num_kernels) != 0:
                 raise ValueError("Hidden layer size should be multiples of dims multiplied with number of kernels.")
             
         self.layer_losses = []
@@ -47,7 +47,6 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
 
     def call(self, x, training=False):
         p = self._estimate_conditional_probability(x)
-        
         h_estimation = self._entropy(p)
         self._clear_layer_losses()
         
@@ -55,6 +54,8 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
             self._add_layer_loss(self._compute_entropy_regularization(h_estimation))
             self._add_layer_loss(self._compute_l2_regularization())
 
+        p = tf.math.reduce_prod(p, axis=1)
+        
         return h_estimation
     
     def _clear_layer_losses(self):
@@ -71,23 +72,20 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
         mu_w_l2 = (
             self._matrix_l2_norm(self._mu_l1_w)
             + self._matrix_l2_norm(self._mu_l2_w)
-            + self._matrix_l2_norm(self._mu_l3_w)
         )
 
         var_w_l2 = (
             self._matrix_l2_norm(self._var_l1_w)
             + self._matrix_l2_norm(self._var_l2_w)
-            + self._matrix_l2_norm(self._var_l3_w)
         )
 
         weigths_w_l2 = (
             self._matrix_l2_norm(self._weights_l1_w)
             + self._matrix_l2_norm(self._weights_l2_w)
-            + self._matrix_l2_norm(self._weights_l3_w)
         )
-
+        
         return self._mlp_l2_reg_coeff * (mu_w_l2 + var_w_l2 + weigths_w_l2)
-    
+        
     def _estimate_conditional_probability(self, x):
         w, mu, var = self._estimate_gaussian_params(x)
         
@@ -100,6 +98,7 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
         return p_cond
 
     def _estimate_gaussian_params(self, x):
+        x = tf.reshape(x, shape=[self._batch_size, self._n_estimators * self._n_dims])
         w = self._w_mlp(x)
         mu = self._mu_mlp(x)
         var = self._var_mlp(x)
@@ -124,14 +123,10 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
         w2 = self._mask_layer_weights_for_conditional_probability_estimation(
             self._weights_l2_w
         )
-        w3 = self._mask_layer_weights_for_conditional_probability_estimation(
-            self._weights_l3_w
-        )
 
         h = self._layer_lrelu(x, w1, self._weights_l1_b)
-        h = self._layer_lrelu(h, w2, self._weights_l2_b)
-        y = self._layer_linear(h, w3, self._weights_l3_b)
-
+        y = self._layer_linear(h, w2, self._weights_l2_b)
+   
         output_shape = [
             self._batch_size,
             self._n_estimators,
@@ -147,11 +142,9 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
     def _mu_mlp(self, x):
         w1 = self._mask_layer_weights_for_conditional_probability_estimation(self._mu_l1_w)
         w2 = self._mask_layer_weights_for_conditional_probability_estimation(self._mu_l2_w)
-        w3 = self._mask_layer_weights_for_conditional_probability_estimation(self._mu_l3_w)
 
         h = self._layer_lrelu(x, w1, self._mu_l1_b)
-        h = self._layer_lrelu(h, w2, self._mu_l2_b)
-        y = self._layer_linear(h, w3, self._mu_l3_b)
+        y = self._layer_linear(h, w2, self._mu_l2_b)
 
         output_shape = [
             self._batch_size,
@@ -167,12 +160,10 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
     def _var_mlp(self, x):
         w1 = self._mask_layer_weights_for_conditional_probability_estimation(self._var_l1_w)
         w2 = self._mask_layer_weights_for_conditional_probability_estimation(self._var_l2_w)
-        w3 = self._mask_layer_weights_for_conditional_probability_estimation(self._var_l3_w)
 
         h = self._layer_lrelu(x, w1, self._var_l1_b)
-        h = self._layer_lrelu(h, w2, self._var_l2_b)
-        y = self._layer_linear(h, w3, self._var_l3_b)
-
+        y = self._layer_linear(h, w2, self._var_l2_b)
+            
         output_shape = [
             self._batch_size,
             self._n_estimators,
@@ -187,18 +178,26 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
 
     def _mask_layer_weights_for_conditional_probability_estimation(self, w):
         w_shape = tf.shape(w)
-        layer_in_dim = w_shape[1]
-        layer_out_dim = w_shape[2]
+        layer_in_dim = w_shape[0]
+        layer_out_dim = w_shape[1]
         num_cells = self._input_shape[-1]
         
-        in_node_cell_idx = (tf.range(0, layer_in_dim, dtype=tf.int32) * num_cells) // layer_in_dim
-        out_node_cell_idx = (tf.range(0, layer_out_dim, dtype=tf.int32) * num_cells) // layer_out_dim
-        
+        in_node_idxs = tf.range(0, layer_in_dim, dtype=tf.int32)
+        out_node_idxs = tf.range(0, layer_out_dim, dtype=tf.int32)
+
+        in_node_estimator_id = in_node_idxs * self._n_estimators // layer_in_dim
+        out_node_estimator_id = out_node_idxs * self._n_estimators // layer_out_dim
+
+        in_node_cell_id = (in_node_idxs * num_cells * self._n_estimators // layer_in_dim) % num_cells
+        out_node_cell_id = (out_node_idxs * num_cells * self._n_estimators // layer_out_dim) % num_cells
+
+        mask_boolean = ((in_node_estimator_id[:, tf.newaxis] == out_node_estimator_id[tf.newaxis, :]) & 
+                        (in_node_cell_id[:, tf.newaxis] <= out_node_cell_id[tf.newaxis, :]) &
+                        (out_node_cell_id[tf.newaxis, :] < (num_cells - 1)))
+
         # Last path is used for estimating the first element so no information 
         #is required.
-        mask = tf.where(tf.logical_and((in_node_cell_idx[:, tf.newaxis] <= out_node_cell_idx[tf.newaxis, :]), 
-                                       out_node_cell_idx[tf.newaxis, :] < (num_cells-1)), 
-                        1.0, 0.0)
+        mask = tf.where(mask_boolean, 1.0, 0.0)
 
         return w * mask
     
@@ -237,126 +236,87 @@ class NeuralEntropyEstimator(tensorflow.keras.models.Model):
         return y
 
     def _layer_linear(self, x, w, b):
-        y = tf.einsum("bnd, nde->bne", x, w) + b
+        y = tf.matmul(x, w) + b
         return y
         
     def _create_w_mlp_variables(self):
-        in_size = self._n_dims
-        out_size = self._n_dims * self._num_kernels
+        in_size = self._n_dims * self._n_estimators
+        out_size = self._n_dims * self._n_estimators * self._num_kernels 
 
         self._weights_l1_w = self._create_trainable_variable(
-            shape=[self._n_estimators, in_size, self._hidden_layer_size],
+            shape=[in_size, self._hidden_layer_size],
             name="weights_l1_w",
         )
 
         self._weights_l1_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, self._hidden_layer_size],
+            shape=[1, self._hidden_layer_size],
             name="weights_l1_b",
             initializer="ze",
         )
 
         self._weights_l2_w = self._create_trainable_variable(
             shape=[
-                self._n_estimators,
                 self._hidden_layer_size,
-                self._hidden_layer_size,
+                out_size,
             ],
             name="weights_l2_w",
         )
 
         self._weights_l2_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, self._hidden_layer_size],
+            shape=[1, out_size],
             name="weights_l2_b",
             initializer="ze",
         )
 
-        self._weights_l3_w = self._create_trainable_variable(
-            shape=[
-                self._n_estimators,
-                self._hidden_layer_size,
-                out_size,
-            ],
-            name="weights_l3_w",
-        )
-
-        self._weights_l3_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, out_size],
-            name="weights_l3_b",
-            initializer="ze",
-        )
-
     def _create_mu_mlp_variables(self):
-        in_size = self._n_dims
-        out_size = self._n_dims * self._num_kernels
+        in_size = self._n_dims * self._n_estimators
+        out_size = self._n_dims * self._n_estimators * self._num_kernels     
 
         self._mu_l1_w = self._create_trainable_variable(
-            shape=[self._n_estimators, in_size, self._hidden_layer_size],
+            shape=[in_size, self._hidden_layer_size],
             name="mu_l1_w",
         )
 
         self._mu_l1_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, self._hidden_layer_size],
+            shape=[1, self._hidden_layer_size],
             name="mu_l1_b",
             initializer="ze",
         )
 
         self._mu_l2_w = self._create_trainable_variable(
-            shape=[self._n_estimators, self._hidden_layer_size, 
-                   self._hidden_layer_size],
+            shape=[self._hidden_layer_size, out_size],
             name="mu_l2_w",
         )
 
         self._mu_l2_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, self._hidden_layer_size],
+            shape=[1, out_size],
             name="mu_l2_b",
             initializer="ze",
         )
 
-        self._mu_l3_w = self._create_trainable_variable(
-            shape=[self._n_estimators, self._hidden_layer_size, out_size],
-            name="mu_l3_w",
-        )
-
-        self._mu_l3_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, out_size],
-            name="mu_l3_b",
-            initializer="ze",
-        )
-
     def _create_var_mlp_variables(self):
-        in_size = self._n_dims
-        out_size = self._n_dims * self._num_kernels
+        in_size = self._n_dims * self._n_estimators
+        out_size = self._n_dims * self._n_estimators * self._num_kernels
 
         self._var_l1_w = self._create_trainable_variable(
-            shape=[self._n_estimators, in_size, self._hidden_layer_size],
+            shape=[in_size, self._hidden_layer_size],
             name="var_l1_w",
         )
 
         self._var_l1_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, self._hidden_layer_size],
+            shape=[1, self._hidden_layer_size],
             name="var_l1_b",
             initializer="ze",
         )
 
         self._var_l2_w = self._create_trainable_variable(
-            shape=[self._n_estimators, self._hidden_layer_size, self._hidden_layer_size],
+            shape=[self._hidden_layer_size, out_size],
             name="var_l2_w",
         )
 
         self._var_l2_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, self._hidden_layer_size],
+            shape=[1, out_size],
             name="var_l2_b",
-            initializer="ze",
-        )
-
-        self._var_l3_w = self._create_trainable_variable(
-            shape=[self._n_estimators, self._hidden_layer_size, out_size],
-            name="var_l3_w",
-        )
-
-        self._var_l3_b = self._create_trainable_variable(
-            shape=[1, self._n_estimators, out_size],
-            name="var_l3_b",
             initializer="ze",
         )
 
