@@ -5,16 +5,16 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 sys.path.append("/home/oefe/Code/GroupDenseLayer")
 
 import tensorflow as tf
-from neural_entropy_estimator import NeuralEntropyEstimator
+from neural_probability_estimator import NeuralProbabilityEstimator
 import unittest
 import numpy as np
 
 
-class NeuralEntropyEstimatorTest(unittest.TestCase):
+class NeuralProbabilityEstimatorTest(unittest.TestCase):
     def setUp(self):
-        super(NeuralEntropyEstimatorTest, self).setUp()
+        super(NeuralProbabilityEstimatorTest, self).setUp()
         x = np.random.normal(size=[500, 2, 3])
-        self._layer = NeuralEntropyEstimator(hidden_layer_size=6, num_kernels=1)
+        self._layer = NeuralProbabilityEstimator(hidden_layer_size=6, num_kernels=1)
         self._layer(x)
 
     def test_weight_masking_input_to_hidden(self):
