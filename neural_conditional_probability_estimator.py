@@ -7,13 +7,13 @@ from tensorflow.keras.initializers import GlorotUniform, Zeros
 class NeuralConditionalProbabilityEstimator(tensorflow.keras.Model):
     def __init__(
         self,
-        hidden_layer_size=512,
         num_kernels=4,
-        max_log_variance_magnitude=3.5,
-        weight_logits_softmax_gain=2.5,
+        max_log_variance_magnitude=5.0,
+        weight_logits_softmax_gain=5.0,
         given_and_estimated_on_same_space=True,
         mlp_l2_reg_coeff=1e-4,
         eps=1e-6,
+        hidden_layer_size=None,
         input_mask=None,
         entropy_regularization_mask=None,
         name="neural_conditional_probability_estimator",
@@ -39,6 +39,12 @@ class NeuralConditionalProbabilityEstimator(tensorflow.keras.Model):
     def build(self, input_shape=None):
         self._input_shape = input_shape
 
+        if self._hidden_layer_size is None:
+            self._hidden_layer_size = 4 * self._n_estimated_timesteps * self._n_estimated_dims * self._num_kernels
+        else: 
+            if self._hidden_layer_size % (self._n_estimated_timesteps * self._n_estimated_dims * self._num_kernels) != 0:
+                raise ValueError("Hidden layer size should be multiples of dims multiplied with number of kernels.")
+            
         self._create_w_mlp_variables()
         self._create_mu_mlp_variables()
         self._create_var_mlp_variables()
@@ -147,7 +153,10 @@ class NeuralConditionalProbabilityEstimator(tensorflow.keras.Model):
             self._num_kernels,
         ]
         y = tf.reshape(y, shape=output_shape)
-        w = tf.nn.softmax(self._weight_logits_softmax_gain * tf.tanh(y), axis=-1)
+        y = tf.clip_by_value(y, 
+                             clip_value_min=-self._weight_logits_softmax_gain, 
+                             clip_value_max=self._weight_logits_softmax_gain)
+        w = tf.nn.softmax(y, axis=-1)
 
         return w
 
@@ -180,7 +189,10 @@ class NeuralConditionalProbabilityEstimator(tensorflow.keras.Model):
             self._n_estimated_dims,
         ]
         y = tf.reshape(y, shape=output_shape)
-        var = tf.exp(self._max_log_variance_magnitude * tf.tanh(y))
+        y = tf.clip_by_value(y, 
+                             clip_value_min=-self._max_log_variance_magnitude, 
+                             clip_value_max=self._max_log_variance_magnitude)
+        var = tf.exp(y)
 
         return var
 

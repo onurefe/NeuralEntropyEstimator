@@ -7,9 +7,9 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
     def __init__(
         self,
         num_kernels=4,
-        max_log_variance_magnitude=3.5,
-        weight_logits_softmax_gain=2.5,
-        mlp_l2_reg_coeff=1e-4,
+        weight_logits_softmax_gain=7.5,
+        max_log_variance_magnitude=7.5,
+        mlp_l2_reg_coeff=1e-7,
         eps=1e-7,
         hidden_layer_size=None,
         name="neural_probability_estimator",
@@ -33,7 +33,7 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         self._input_shape = input_shape
 
         if self._hidden_layer_size is None:
-            self._hidden_layer_size = 8 * self._n_estimators * self._n_dims * self._num_kernels
+            self._hidden_layer_size = 4 * self._n_estimators * self._n_dims * self._num_kernels
         else: 
             if self._hidden_layer_size % (self._n_estimators * self._n_dims * self._num_kernels) != 0:
                 raise ValueError("Hidden layer size should be multiples of dims multiplied with number of kernels.")
@@ -43,9 +43,11 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         self._create_w_mlp_variables()
         self._create_mu_mlp_variables()
         self._create_var_mlp_variables()
-
+        self._create_input_rotation_matrix()
+        
     def call(self, x, training=False):
-        p = self._estimate_conditional_probability(x)
+        z = self._rotate_input_by_hadamard_matrix(x)
+        p = self._estimate_conditional_probability(z)
         h_estimation = self._entropy(p)
         
         if training:
@@ -54,6 +56,10 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         p = tf.math.reduce_prod(p, axis=-1)
         
         return p
+    
+    def _rotate_input_by_hadamard_matrix(self, x):
+        z = tf.matmul(x, self._rotation_matrix)
+        return z
     
     def _add_regularizations(self, h):
         l2_reg = self._compute_l2_regularization()
@@ -137,7 +143,10 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         ]
         y = tf.reshape(y, shape=output_shape)
         y = tf.roll(y, shift=1, axis=-2)
-        w = tf.nn.softmax(self._weight_logits_softmax_gain * tf.tanh(y), axis=-1)
+        y = tf.clip_by_value(y, 
+                             clip_value_min=-self._weight_logits_softmax_gain, 
+                             clip_value_max=self._weight_logits_softmax_gain)
+        w = tf.nn.softmax(y, axis=-1)
 
         return w
 
@@ -149,7 +158,7 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         h = self._layer_lrelu(x, w1, self._mu_l1_b)
         h = self._layer_lrelu(h, w2, self._mu_l2_b)
         y = self._layer_linear(h, w3, self._mu_l3_b)
-
+        
         output_shape = [
             self._batch_size,
             self._n_estimators,
@@ -178,7 +187,10 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         ]
         y = tf.reshape(y, shape=output_shape)
         y = tf.roll(y, shift=1, axis=-2)
-        var = tf.exp(self._max_log_variance_magnitude * tf.tanh(y))
+        y = tf.clip_by_value(y, 
+                             clip_value_min=-self._max_log_variance_magnitude, 
+                             clip_value_max=self._max_log_variance_magnitude)
+        var = tf.exp(y)
 
         return var
 
@@ -197,7 +209,7 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         in_node_cell_id = (in_node_idxs * num_cells * self._n_estimators // layer_in_dim) % num_cells
         out_node_cell_id = (out_node_idxs * num_cells * self._n_estimators // layer_out_dim) % num_cells
 
-        mask_boolean = ((in_node_estimator_id[:, tf.newaxis] == out_node_estimator_id[tf.newaxis, :]) & 
+        mask_boolean = ((in_node_estimator_id[tf.newaxis, :] == out_node_estimator_id[tf.newaxis, :]) & 
                         (in_node_cell_id[:, tf.newaxis] <= out_node_cell_id[tf.newaxis, :]) &
                         (out_node_cell_id[tf.newaxis, :] < (num_cells - 1)))
 
@@ -244,6 +256,9 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
     def _layer_linear(self, x, w, b):
         y = tf.matmul(x, w) + b
         return y
+    
+    def _create_input_rotation_matrix(self):
+        self._rotation_matrix = self._create_normalized_hadamard_matrix()
         
     def _create_w_mlp_variables(self):
         in_size = self._n_dims * self._n_estimators
@@ -370,6 +385,21 @@ class NeuralProbabilityEstimator(tensorflow.keras.models.Model):
         var = tf.Variable(initializer(shape), trainable=True, name=name)
         return var
 
+    def _create_normalized_hadamard_matrix(self):
+        n = self._n_dims
+        
+        # Check if n is a power of 2
+        if (n & (n - 1)) != 0 or n <= 0:
+            raise ValueError("n must be a positive power of 2")
+        
+        H = tf.constant([[1]], dtype=tf.float32)
+        i = 1
+        while i < n:
+            H = tf.concat([tf.concat([H, H], axis=1), tf.concat([H, -H], axis=1)], axis=0)
+            i *= 2
+        
+        return H / tf.sqrt(tf.cast(n, tf.float32))
+    
     @property
     def _n_dims(self):
         return self._input_shape[2]

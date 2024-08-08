@@ -1,17 +1,21 @@
 from matplotlib import pyplot as plt
 import pandas as pd
 
-df1 = pd.read_csv("transient_entropies_hidden2_4dims.csv")
-df2 = pd.read_csv("transient_entropies_hidden4_4dims.csv")
-df3 = pd.read_csv("transient_entropies_hidden8_4dims.csv")
-df = pd.DataFrame({"Hidden2":df1["Estimated entropies"], 
-                   "Hidden4":df2["Estimated entropies"],
-                   "Hidden8":df3["Estimated entropies"]})
+df = pd.read_csv("data.csv")
 
+
+"""df1 = pd.read_csv("transient_entropies_diagonal_kernel.csv")
+df2 = pd.read_csv("transient_entropies_kernel.csv")
+df3 = pd.read_csv("transient_entropies_neural.csv")
+df = pd.DataFrame({"Diagonal kernel":df1["Estimated entropies"], 
+                   "Kernel":df2["Estimated entropies"],
+                   "Neural":df3["Estimated entropies"],
+                   "True entropy": df3["True entropies"]})
+"""
 # Plotting
 plt.figure(figsize=(12, 6))
 
-for column in df.columns:
+for column in df.columns[1:]:
     plt.plot(df.index, df[column], label=column)
 
 # Adding labels and title
@@ -23,4 +27,4 @@ plt.title('Line Plot of DataFrame Columns')
 plt.legend()
 
 # Show plot
-plt.savefig("neural_pdf_multiple.png")
+plt.savefig("image.png")

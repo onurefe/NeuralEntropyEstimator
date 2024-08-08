@@ -148,7 +148,11 @@ class NeuralConditionalProbabilityEstimatorMultiple(tensorflow.keras.Model):
             self._num_kernels
         ]
         y = tf.reshape(y, shape=output_shape)
-        w = tf.nn.softmax(self._weight_logits_softmax_gain * tf.tanh(y), axis=-1)
+        y = tf.clip_by_value(y, 
+                             clip_value_min=-self._weight_logits_softmax_gain, 
+                             clip_value_max=self._weight_logits_softmax_gain)
+        
+        w = tf.nn.softmax(y, axis=-1)
 
         return w
 
@@ -179,7 +183,10 @@ class NeuralConditionalProbabilityEstimatorMultiple(tensorflow.keras.Model):
             self._n_estimated_dims,
         ]
         y = tf.reshape(y, shape=output_shape)
-        var = tf.exp(self._max_log_variance_magnitude * tf.tanh(y))
+        y = tf.clip_by_value(y, 
+                             clip_value_min=-self._max_log_variance_magnitude, 
+                             clip_value_max=self._max_log_variance_magnitude)
+        var = tf.exp(y)
 
         return var
 

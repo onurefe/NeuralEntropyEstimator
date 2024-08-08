@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow.keras import layers, models
 import scipy.stats as stats
 from neural_probability_estimator import NeuralProbabilityEstimator
+from probability_estimator import ProbabilityEstimator, ProbabilityEstimatorCovarianceDiagonalizingKernel
 import pandas as pd
 import matplotlib.pyplot as plt
 
@@ -28,7 +29,7 @@ def generate_synthetic_data(num_samples, estimators, dims, latent_dim=10, seed=0
         latent_dim = dims
         
     # Step 1: Generate latent variables
-    latent_data = np.random.normal(size=(num_samples, latent_dim))
+    latent_data = 5. * np.random.normal(size=(num_samples, latent_dim))
     
     # Step 2: Create a random linear transformation matrix with full rank
     np.random.seed(seed)
@@ -37,14 +38,26 @@ def generate_synthetic_data(num_samples, estimators, dims, latent_dim=10, seed=0
     data = np.einsum("bc, ecd->bed", latent_data, transformation_matrix)
 
     # Step 4: Add independent noise to ensure full rank covariance
-    noise = np.random.normal(scale=0.05, size=(num_samples, estimators, dims))
+    noise = np.random.normal(scale=1.0, size=(num_samples, estimators, dims))
     data += noise
     
     return data
 
-def build_model(batch_size, estimators, dims):
+def build_neural_model(batch_size, estimators, dims):
     init_tensor = np.random.normal(size=(batch_size, estimators, dims))
     model = NeuralProbabilityEstimator()
+    model(init_tensor)
+    return model
+
+def build_kernel_model(batch_size, estimators, dims):
+    init_tensor = np.random.normal(size=(batch_size, estimators, dims))
+    model = ProbabilityEstimator()
+    model(init_tensor)
+    return model
+
+def build_kernel_model_diagonalizing_kernel(batch_size, estimators, dims):
+    init_tensor = np.random.normal(size=(batch_size, estimators, dims))
+    model = ProbabilityEstimatorCovarianceDiagonalizingKernel()
     model(init_tensor)
     return model
 
@@ -63,7 +76,7 @@ def train_step(model, optimizer, X_batch):
 # Train the model
 def train_model(model, data, epochs=50, batch_size=32):
     data1, data2 = data
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=2.5e-3)
     checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
         filepath='trained_models/epoch_{epoch:02d}.h5',  # Save weights with epoch number in filename
         save_weights_only=True,
@@ -118,8 +131,11 @@ def load_and_test_model(weights_filepath, batch_size, estimators, dims, test_dat
 
 # Gaussian entropy approximation
 def gaussian_entropy(cov_matrix):
-    dim = cov_matrix.shape[0]
-    return 0.5 * dim * (np.log(2 * np.pi) + 1) + 0.5 * np.log(np.linalg.det(cov_matrix))
+    if len(np.shape(cov_matrix)) == 0:
+        return 0.5 * (np.log(2 * np.pi) + 1) + 0.5 * np.log(cov_matrix)
+    else:
+        dim = cov_matrix.shape[0]
+        return 0.5 * dim * (np.log(2 * np.pi) + 1) + 0.5 * np.log(np.linalg.det(cov_matrix))
 
 
 # Main script
@@ -127,30 +143,22 @@ if __name__ == "__main__":
     # Parameters
     num_samples = 100000
     num_estimators = 1
-    num_dims = 4
+    num_dims = 2
     
-    epochs = 200
+    epochs = 500
     batch_size = 10000
 
     # Generate synthetic dataset
-    data1 = generate_synthetic_data(num_samples, num_estimators, num_dims, seed=0)
-    data2 = generate_synthetic_data(num_samples, num_estimators, num_dims, seed=1)
+    data1 = generate_synthetic_data(num_samples, num_estimators, num_dims, seed=0, latent_dim=num_dims-1)
+    data2 = generate_synthetic_data(num_samples, num_estimators, num_dims, seed=1, latent_dim=num_dims-1)
     
     # Build and train the model
-    model = build_model(batch_size, num_estimators, num_dims)
+    # model = build_neural_model(batch_size, num_estimators, num_dims)
+    # model = build_kernel_model(batch_size, num_estimators, num_dims)
+    model = build_kernel_model_diagonalizing_kernel(batch_size, num_estimators, num_dims)
     true_entropies, estimated_entropies = train_model(model, [data1, data2], epochs=epochs, batch_size=batch_size)
     
     data = pd.DataFrame({'True entropies': true_entropies, 'Estimated entropies': estimated_entropies})
 
     # Save the DataFrame to a CSV file
-    data.to_csv('transient_entropies_hidden8_4dims.csv', index=False)
-    plot(data)
-    
-    """
-    model, predicted_entropy = load_and_test_model("trained_models/epoch_{epoch:02d}.h5".format(epoch=epochs), 
-                                                   batch_size=batch_size,
-                                                   estimators=num_estimators,
-                                                   dims=num_dims,
-                                                   test_data=data1[0:batch_size, :, :])
-        
-    """
+    data.to_csv('transient_entropies_diagonal_kernel.csv', index=False)

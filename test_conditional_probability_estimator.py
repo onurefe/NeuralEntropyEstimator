@@ -69,6 +69,33 @@ def train_step(model, optimizer, X_batch):
         
     return loss, h_cond
 
+def direct_sum(x, y):
+    x = np.expand_dims(x, axis=1)
+    y = np.expand_dims(y, axis=2)
+    xy = np.concatenate([x, np.zeros_like(x)], axis=3) + np.concatenate([np.zeros_like(y), y], axis=3)
+    return xy
+
+# Gaussian entropy approximation
+def gaussian_entropy(x):
+    x_shape = np.shape(x)
+    batch_size = x_shape[0]
+    patches = x_shape[1]
+    dims = x_shape[2]
+
+    x_joint = direct_sum(x, x)
+    x_joint = x_joint - np.mean(x_joint, axis=0)
+    
+    cov_matrix = np.einsum("bnmd, bnme->nmde", x_joint, x_joint) / batch_size
+    
+    perturbation = 1e-7 * np.eye(2*dims)
+    volume = np.linalg.det(cov_matrix + perturbation[tf.newaxis, tf.newaxis, ...])
+    h_joint = 0.5 * np.shape(cov_matrix)[-1] * (np.log(2 * np.pi) + 1) + 0.5 * np.log(volume)
+    
+    var = np.einsum("nnde->nde", cov_matrix)
+    h_marginal = 0.5 * (np.log(2 * np.pi) + 1) + 0.5 * np.log(var[:, 0, 0])
+    h_cond = h_joint - np.expand_dims(h_marginal, axis=1)
+    return h_cond
+
 # Train the model
 def train_model(model, data, epochs=50, batch_size=32):
     data1, data2 = data
@@ -80,7 +107,8 @@ def train_model(model, data, epochs=50, batch_size=32):
     )
     
     estimated_entropies = []
-
+    gaussian_entropies = []
+    
     for epoch in range(epochs):
         if epoch < epochs // 2:
             data = data1
@@ -93,6 +121,7 @@ def train_model(model, data, epochs=50, batch_size=32):
             
             mask = 1. - np.eye(33, dtype=np.float32)
             estimated_entropies.append(h_cond_estimated * mask)
+            gaussian_entropies.append(gaussian_entropy(X_batch) * mask)
             
         # Evaluate the model
         print(f"Mean estimated entropy: {np.mean(h_cond_estimated * mask)}")
@@ -104,24 +133,9 @@ def train_model(model, data, epochs=50, batch_size=32):
 
     # Convert entropies to array.
     estimated_entropies = np.array(estimated_entropies)
-        
-    return estimated_entropies
-
-# Gaussian entropy approximation
-def gaussian_entropy(cov_matrix):
-    dim = cov_matrix.shape[-1]
+    gaussian_entropies = np.array(gaussian_entropies)
     
-    # Retrieve the low rank elements.
-    low_rank_cov = np.einsum("nncd->ncd", cov_matrix)
-    
-    h_joint = 0.5 * dim * (np.log(2 * np.pi) + 1) + 0.5 * np.log(np.linalg.det(cov_matrix))
-    h_joint = np.nan_to_num(h_joint, nan=0.0, posinf=0.0, neginf=0.0)
-    
-    h_marginal = 0.5 * (np.log(2 * np.pi) + 1) + 0.5 * np.log(np.abs(low_rank_cov[:, 0, 0]))
-    
-    h_joint = h_joint + np.diag(h_marginal)
-    
-    return h_joint
+    return estimated_entropies, gaussian_entropies
 
 # Main script
 if __name__ == "__main__":
@@ -139,29 +153,17 @@ if __name__ == "__main__":
     
     # Build and train the model
     # model = build_model(batch_size, num_estimators, num_dims)
-    model_multiple = build_model_multiple(batch_size, num_estimators, num_dims)
+    model = build_model_multiple(batch_size, num_estimators, num_dims)
     
-    # estimated_entropies = train_model(model, [data1, data2], epochs=epochs, batch_size=batch_size)
-    estimated_entropies_multiple = train_model(model_multiple, [data1, data2], epochs=epochs, batch_size=batch_size)
+    estimated_entropies, gaussian_entropies = train_model(model, [data1, data2], epochs=epochs, batch_size=batch_size)
     
-    """
-    df1 = pd.DataFrame({})
+    df = pd.DataFrame({})
     
-    for l in range(10):
+    for l in range(5):
         given = np.random.random_integers(0, 32)
         estimated = np.random.random_integers(0, 32)
         
-        df1["given{}_estimated{}".format(given, estimated)] = estimated_entropies[:, given, estimated]    
+        df["x{}_y{}_estimated".format(given, estimated)] = estimated_entropies[:, given, estimated]    
+        df["x{}_y{}_gaussian".format(given, estimated)] = gaussian_entropies[:, given, estimated]    
         
-    df1.to_csv("neural_conditional_pdf.csv")
-    """
-
-    df2 = pd.DataFrame({})
-    
-    for l in range(10):
-        given = np.random.random_integers(0, 32)
-        estimated = np.random.random_integers(0, 32)
-        
-        df2["given{}_estimated{}".format(given, estimated)] = estimated_entropies_multiple[:, given, estimated]    
-        
-    df2.to_csv("neural_conditional_pdf_multiple.csv")
+    df.to_csv("data.csv")
